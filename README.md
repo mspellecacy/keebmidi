@@ -24,19 +24,7 @@ keebmidi is a terminal UI (TUI) application written in Rust that lets you turn a
 
 ## 📸 Quick Overview
 
-```
-┌─ keebmidi ──────────────────── [Setup] ─── MPK mini IV ─── Connected ─┐
-│ Mappings                    │ Details                                  │
-│ ► Kick Pad → Space          │ Trigger: NoteOn ch=1 note=36            │
-│   Pedal → Ctrl+Shift+P      │ Action:  KeyTap(Space)                  │
-│   Knob 1 → Volume Macro     │ Debounce: 50ms                          │
-│                              │ Enabled: ✓                              │
-├──────────────────────────────┴──────────────────────────────────────────┤
-│ [LOG] NoteOn ch=1 note=36 vel=100 → Space                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│ q:quit  s:save  a:add  e:edit  d:delete  r:run  l:learn  space:toggle │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+![screenshot.png](docs/screenshot.png)
 
 ---
 
@@ -52,7 +40,6 @@ keebmidi is a terminal UI (TUI) application written in Rust that lets you turn a
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/keebmidi.git
 cd keebmidi
 
 # Build in release mode
