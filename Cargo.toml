@@ -1,0 +1,21 @@
+[package]
+name = "keebmidi"
+version = "0.1.0"
+edition = "2024"
+description = "A TUI CLI for mapping MIDI inputs to keyboard keys and macros"
+
+[dependencies]
+ratatui = "0.30.0"
+crossterm = { version = "0.29", features = ["event-stream"] }
+midir = "0.10"
+enigo = { version = "0.6.1", features = ["wayland", "xdo"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1.0.3+spec-1.1.0"
+thiserror = "2"
+anyhow = "1"
+crossbeam-channel = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
