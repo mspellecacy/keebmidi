@@ -6,6 +6,10 @@ keebmidi is a terminal UI (TUI) application written in Rust that lets you turn a
 
 ---
 
+## 📣 Notes
+- 🤖 **keebmidi was vibe-coded** as an easy-to-use tool for mapping MIDI inputs to keyboard keys and macros.
+- ⚠️ I have no practical way to test MacOS or Windows, so YMMV.
+
 ## ✨ Features
 
 - **🎛️ MIDI Device Discovery** — Automatically enumerate and connect to available MIDI input devices.
