@@ -1,7 +1,7 @@
 use anyhow::Result;
 use enigo::{
     Enigo, Keyboard as EnigoKeyboard, Key, Settings,
-    Direction::{Click, Press, Release},
+    Direction::{self, Click, Press, Release},
 };
 use crate::config::model::KeySpec;
 
@@ -22,6 +22,177 @@ impl EnigoKeyboardSink {
         let enigo = Enigo::new(&Settings::default())
             .map_err(|e| anyhow::anyhow!("Failed to initialize enigo: {e}"))?;
         Ok(Self { enigo })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Linux media key subprocess dispatch
+//
+// enigo 0.6.x has a bug in its Wayland backend where XF86 media keys cannot
+// be injected. The bug affects both `key()` (broken keysym name stripping in
+// `map_key()`) and `raw()` (keycodes not in the virtual keyboard's XKB keymap
+// are silently ignored by the compositor).
+//
+// Instead of trying to work around enigo's broken Wayland virtual keyboard
+// path, we dispatch media key actions directly to system commands:
+//   - Volume:     `wpctl` (PipeWire) or `pactl` (PulseAudio)
+//   - Playback:   `playerctl` (MPRIS/D-Bus)
+//   - Brightness: `brightnessctl`
+//
+// This bypasses the Wayland virtual keyboard protocol entirely and talks
+// directly to the relevant system services, which is more reliable than
+// simulating keyboard input for these specific actions.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(unix, not(target_os = "macos")))]
+mod media_commands {
+    use std::process::Command;
+    use anyhow::{Result, Context};
+    use tracing::{debug, warn};
+    use crate::config::model::KeySpec;
+
+    /// Volume step percentage used for raise/lower commands.
+    const VOLUME_STEP: &str = "5";
+
+    /// Brightness step percentage used for raise/lower commands.
+    const BRIGHTNESS_STEP: &str = "5";
+
+    /// Returns `true` if the given `KeySpec` is a media key that should be
+    /// handled via subprocess commands rather than enigo.
+    pub(super) fn is_media_key(key: &KeySpec) -> bool {
+        matches!(
+            key,
+            KeySpec::VolumeUp
+                | KeySpec::VolumeDown
+                | KeySpec::VolumeMute
+                | KeySpec::MediaPlayPause
+                | KeySpec::MediaNextTrack
+                | KeySpec::MediaPrevTrack
+                | KeySpec::MediaStop
+                | KeySpec::BrightnessUp
+                | KeySpec::BrightnessDown
+        )
+    }
+
+    /// Execute the system command corresponding to a media key tap.
+    /// Returns `Ok(())` on success or an error if no suitable command was found.
+    pub(super) fn send_media_key(key: &KeySpec) -> Result<()> {
+        match key {
+            KeySpec::VolumeUp => volume_up(),
+            KeySpec::VolumeDown => volume_down(),
+            KeySpec::VolumeMute => volume_mute_toggle(),
+            KeySpec::MediaPlayPause => playerctl("play-pause"),
+            KeySpec::MediaNextTrack => playerctl("next"),
+            KeySpec::MediaPrevTrack => playerctl("previous"),
+            KeySpec::MediaStop => playerctl("stop"),
+            KeySpec::BrightnessUp => brightness_up(),
+            KeySpec::BrightnessDown => brightness_down(),
+            _ => unreachable!("is_media_key guard should prevent this"),
+        }
+    }
+
+    // -- Volume ---------------------------------------------------------------
+
+    fn volume_up() -> Result<()> {
+        // Try wpctl (PipeWire) first, fall back to pactl (PulseAudio)
+        if try_run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{VOLUME_STEP}%+")]).is_ok() {
+            return Ok(());
+        }
+        run("pactl", &["set-sink-volume", "@DEFAULT_SINK@", &format!("+{VOLUME_STEP}%")])
+    }
+
+    fn volume_down() -> Result<()> {
+        if try_run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{VOLUME_STEP}%-")]).is_ok() {
+            return Ok(());
+        }
+        run("pactl", &["set-sink-volume", "@DEFAULT_SINK@", &format!("-{VOLUME_STEP}%")])
+    }
+
+    fn volume_mute_toggle() -> Result<()> {
+        if try_run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]).is_ok() {
+            return Ok(());
+        }
+        run("pactl", &["set-sink-mute", "@DEFAULT_SINK@", "toggle"])
+    }
+
+    // -- Media playback -------------------------------------------------------
+
+    fn playerctl(action: &str) -> Result<()> {
+        run("playerctl", &[action])
+    }
+
+    // -- Brightness -----------------------------------------------------------
+
+    fn brightness_up() -> Result<()> {
+        run("brightnessctl", &["set", &format!("{BRIGHTNESS_STEP}%+")])
+    }
+
+    fn brightness_down() -> Result<()> {
+        run("brightnessctl", &["set", &format!("{BRIGHTNESS_STEP}%-")])
+    }
+
+    // -- Helpers --------------------------------------------------------------
+
+    /// Run a command and return `Ok(())` if it exits successfully.
+    fn run(program: &str, args: &[&str]) -> Result<()> {
+        debug!("media_commands: running {} {:?}", program, args);
+        let output = Command::new(program)
+            .args(args)
+            .output()
+            .with_context(|| format!("{program} not found or failed to execute"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("{program} failed (exit {}): {stderr}", output.status)
+        }
+    }
+
+    /// Try to run a command, returning `Ok(())` on success or `Err` on any
+    /// failure (including the program not being installed). Used for fallback
+    /// chains where we want to silently try the next option.
+    fn try_run(program: &str, args: &[&str]) -> Result<()> {
+        debug!("media_commands: trying {} {:?}", program, args);
+        match Command::new(program).args(args).output() {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!("media_commands: {program} failed: {stderr}");
+                anyhow::bail!("{program} failed")
+            }
+            Err(e) => {
+                debug!("media_commands: {program} not available: {e}");
+                anyhow::bail!("{program} not found")
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_is_media_key() {
+            assert!(is_media_key(&KeySpec::VolumeUp));
+            assert!(is_media_key(&KeySpec::VolumeDown));
+            assert!(is_media_key(&KeySpec::VolumeMute));
+            assert!(is_media_key(&KeySpec::MediaPlayPause));
+            assert!(is_media_key(&KeySpec::MediaNextTrack));
+            assert!(is_media_key(&KeySpec::MediaPrevTrack));
+            assert!(is_media_key(&KeySpec::MediaStop));
+            assert!(is_media_key(&KeySpec::BrightnessUp));
+            assert!(is_media_key(&KeySpec::BrightnessDown));
+        }
+
+        #[test]
+        fn test_non_media_keys() {
+            assert!(!is_media_key(&KeySpec::Space));
+            assert!(!is_media_key(&KeySpec::Enter));
+            assert!(!is_media_key(&KeySpec::F(1)));
+            assert!(!is_media_key(&KeySpec::Char('a')));
+            assert!(!is_media_key(&KeySpec::Ctrl));
+            assert!(!is_media_key(&KeySpec::Alt));
+        }
     }
 }
 
@@ -82,23 +253,42 @@ fn keyspec_to_enigo(key: &KeySpec) -> Key {
     }
 }
 
+impl EnigoKeyboardSink {
+    /// Send a key event. On Linux, media/XF86 keys are dispatched via system
+    /// commands (wpctl/pactl/playerctl/brightnessctl) to bypass enigo's broken
+    /// Wayland XF86 key injection. All other keys use the normal enigo path.
+    fn send_key(&mut self, key: &KeySpec, direction: Direction) -> Result<()> {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            // Media keys only fire on tap (Click) or Press — skip Release to
+            // avoid double-firing when key_down + key_up are called separately.
+            if media_commands::is_media_key(key)
+                && (direction == Click || direction == Press)
+            {
+                return media_commands::send_media_key(key);
+            }
+            // For Release of a media key, just succeed silently.
+            if media_commands::is_media_key(key) && direction == Release {
+                return Ok(());
+            }
+        }
+        self.enigo
+            .key(keyspec_to_enigo(key), direction)
+            .map_err(|e| anyhow::anyhow!("key send failed: {e}"))
+    }
+}
+
 impl KeyboardSink for EnigoKeyboardSink {
     fn key_down(&mut self, key: &KeySpec) -> Result<()> {
-        self.enigo
-            .key(keyspec_to_enigo(key), Press)
-            .map_err(|e| anyhow::anyhow!("key_down failed: {e}"))
+        self.send_key(key, Press)
     }
 
     fn key_up(&mut self, key: &KeySpec) -> Result<()> {
-        self.enigo
-            .key(keyspec_to_enigo(key), Release)
-            .map_err(|e| anyhow::anyhow!("key_up failed: {e}"))
+        self.send_key(key, Release)
     }
 
     fn key_tap(&mut self, key: &KeySpec) -> Result<()> {
-        self.enigo
-            .key(keyspec_to_enigo(key), Click)
-            .map_err(|e| anyhow::anyhow!("key_tap failed: {e}"))
+        self.send_key(key, Click)
     }
 
     fn text(&mut self, text: &str) -> Result<()> {
