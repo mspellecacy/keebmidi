@@ -73,6 +73,8 @@ pub struct AppState {
     pub action_menu_open: bool,
     pub action_menu_index: usize,
     pub edit_menu_index: usize,
+    pub media_key_menu_open: bool,
+    pub media_key_menu_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,6 +117,8 @@ impl Default for AppState {
             action_menu_open: false,
             action_menu_index: 0,
             edit_menu_index: 0,
+            media_key_menu_open: false,
+            media_key_menu_index: 0,
         }
     }
 }

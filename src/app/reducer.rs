@@ -299,6 +299,9 @@ fn detect_knob_mode(values: &[u8]) -> KnobMode {
 }
 
 fn handle_learn_action_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffect> {
+    if state.media_key_menu_open {
+        return handle_media_key_menu_key(state, key);
+    }
     if state.action_menu_open {
         return handle_action_menu_key(state, key);
     }
@@ -375,7 +378,7 @@ fn handle_learn_action_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffec
 }
 
 fn handle_action_menu_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffect> {
-    // Menu: 0=Key/Chord, 1=Text, 2=Record Macro
+    // Menu: 0=Key/Chord, 1=Text, 2=Record Macro, 3=Media Key
     match key.code {
         KeyCode::Esc => {
             state.action_menu_open = false;
@@ -388,24 +391,26 @@ fn handle_action_menu_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffect
             }
         }
         KeyCode::Down => {
-            if state.action_menu_index < 2 {
+            if state.action_menu_index < 3 {
                 state.action_menu_index += 1;
             }
         }
         KeyCode::Enter => {
-            state.action_menu_open = false;
             match state.action_menu_index {
                 0 => {
+                    state.action_menu_open = false;
                     state.learn_state = Some(LearnState::WaitingForSingleKey);
                     state.add_log("Press a key or chord...");
                 }
                 1 => {
+                    state.action_menu_open = false;
                     state.mode = AppMode::TextInput;
                     state.text_input_buffer.clear();
                     state.text_input_purpose = TextInputPurpose::TextAction;
                     state.add_log("Type text, press Enter to confirm...");
                 }
                 2 => {
+                    state.action_menu_open = false;
                     state.mode = AppMode::RecordMacro;
                     state.learn_state = Some(LearnState::RecordingMacro {
                         started_at: Instant::now(),
@@ -413,8 +418,55 @@ fn handle_action_menu_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffect
                     });
                     state.add_log("Recording macro... Press Enter to stop, Esc to cancel");
                 }
+                3 => {
+                    // Open media key sub-menu
+                    state.action_menu_open = false;
+                    state.media_key_menu_open = true;
+                    state.media_key_menu_index = 0;
+                    state.add_log("Select a media key...");
+                }
                 _ => {}
             }
+        }
+        _ => {}
+    }
+    vec![SideEffect::None]
+}
+
+pub const MEDIA_KEY_OPTIONS: &[KeySpec] = &[
+    KeySpec::VolumeUp,
+    KeySpec::VolumeDown,
+    KeySpec::VolumeMute,
+    KeySpec::MediaPlayPause,
+    KeySpec::MediaStop,
+    KeySpec::MediaNextTrack,
+    KeySpec::MediaPrevTrack,
+    KeySpec::BrightnessUp,
+    KeySpec::BrightnessDown,
+];
+
+fn handle_media_key_menu_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffect> {
+    let item_count = MEDIA_KEY_OPTIONS.len();
+    match key.code {
+        KeyCode::Esc => {
+            state.media_key_menu_open = false;
+            state.action_menu_open = true;
+            state.add_log("Media key selection cancelled");
+        }
+        KeyCode::Up => {
+            if state.media_key_menu_index > 0 {
+                state.media_key_menu_index -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if state.media_key_menu_index + 1 < item_count {
+                state.media_key_menu_index += 1;
+            }
+        }
+        KeyCode::Enter => {
+            let selected = MEDIA_KEY_OPTIONS[state.media_key_menu_index].clone();
+            state.media_key_menu_open = false;
+            finalize_action(state, OutputAction::KeyTap { key: selected });
         }
         _ => {}
     }

@@ -5,13 +5,16 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::state::{AppMode, AppState, LearnState};
+use crate::app::reducer::MEDIA_KEY_OPTIONS;
 
 /// Draw a centered modal overlay.
 pub fn draw_modal(f: &mut Frame, state: &AppState) {
     match &state.mode {
         AppMode::LearnMidi => draw_learn_midi_modal(f, state),
         AppMode::LearnAction => {
-            if state.action_menu_open {
+            if state.media_key_menu_open {
+                draw_media_key_menu_modal(f, state);
+            } else if state.action_menu_open {
                 draw_action_menu_modal(f, state);
             } else {
                 draw_learn_key_modal(f, state);
@@ -121,10 +124,10 @@ fn draw_learn_midi_modal(f: &mut Frame, state: &AppState) {
 }
 
 fn draw_action_menu_modal(f: &mut Frame, state: &AppState) {
-    let area = centered_rect(40, 9, f.area());
+    let area = centered_rect(40, 10, f.area());
     f.render_widget(Clear, area);
 
-    let options = ["Key / Chord", "Type Text", "Record Macro"];
+    let options = ["Key / Chord", "Type Text", "Record Macro", "Media Key"];
     let items: Vec<ListItem> = options
         .iter()
         .enumerate()
@@ -151,6 +154,44 @@ fn draw_action_menu_modal(f: &mut Frame, state: &AppState) {
     let list = List::new(items).block(
         Block::default()
             .title(" Choose Action Type ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+
+    f.render_widget(list, area);
+}
+
+fn draw_media_key_menu_modal(f: &mut Frame, state: &AppState) {
+    let item_count = MEDIA_KEY_OPTIONS.len() as u16;
+    let area = centered_rect(40, item_count + 2, f.area());
+    f.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = MEDIA_KEY_OPTIONS
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            let marker = if i == state.media_key_menu_index {
+                "▸ "
+            } else {
+                "  "
+            };
+            let style = if i == state.media_key_menu_index {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(Span::styled(
+                format!("{marker}{key}"),
+                style,
+            )))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(" Select Media Key ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow)),
     );
