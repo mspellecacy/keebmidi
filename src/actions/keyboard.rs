@@ -56,6 +56,29 @@ fn keyspec_to_enigo(key: &KeySpec) -> Key {
         KeySpec::Alt => Key::Alt,
         KeySpec::Shift => Key::Shift,
         KeySpec::Meta => Key::Meta,
+        KeySpec::VolumeUp => Key::VolumeUp,
+        KeySpec::VolumeDown => Key::VolumeDown,
+        KeySpec::VolumeMute => Key::VolumeMute,
+        KeySpec::MediaPlayPause => Key::MediaPlayPause,
+        #[cfg(not(target_os = "macos"))]
+        KeySpec::MediaStop => Key::MediaStop,
+        #[cfg(target_os = "macos")]
+        KeySpec::MediaStop => Key::Unicode('\0'),
+        KeySpec::MediaNextTrack => Key::MediaNextTrack,
+        KeySpec::MediaPrevTrack => Key::MediaPrevTrack,
+        // Brightness keys: platform-specific
+        #[cfg(target_os = "macos")]
+        KeySpec::BrightnessUp => Key::BrightnessUp,
+        #[cfg(target_os = "macos")]
+        KeySpec::BrightnessDown => Key::BrightnessDown,
+        #[cfg(all(unix, not(target_os = "macos")))]
+        KeySpec::BrightnessUp => Key::Other(0x1008FF02), // XF86MonBrightnessUp
+        #[cfg(all(unix, not(target_os = "macos")))]
+        KeySpec::BrightnessDown => Key::Other(0x1008FF03), // XF86MonBrightnessDown
+        #[cfg(target_os = "windows")]
+        KeySpec::BrightnessUp => Key::Unicode('\0'),
+        #[cfg(target_os = "windows")]
+        KeySpec::BrightnessDown => Key::Unicode('\0'),
     }
 }
 

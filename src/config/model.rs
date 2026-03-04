@@ -21,6 +21,19 @@ pub enum KeySpec {
     Alt,
     Shift,
     Meta,
+
+    // Media keys
+    VolumeUp,
+    VolumeDown,
+    VolumeMute,
+    MediaPlayPause,
+    MediaStop,
+    MediaNextTrack,
+    MediaPrevTrack,
+
+    // Brightness (platform-dependent)
+    BrightnessUp,
+    BrightnessDown,
 }
 
 impl fmt::Display for KeySpec {
@@ -41,6 +54,15 @@ impl fmt::Display for KeySpec {
             KeySpec::Alt => write!(f, "Alt"),
             KeySpec::Shift => write!(f, "Shift"),
             KeySpec::Meta => write!(f, "Meta"),
+            KeySpec::VolumeUp => write!(f, "Volume Up"),
+            KeySpec::VolumeDown => write!(f, "Volume Down"),
+            KeySpec::VolumeMute => write!(f, "Volume Mute"),
+            KeySpec::MediaPlayPause => write!(f, "Play/Pause"),
+            KeySpec::MediaStop => write!(f, "Media Stop"),
+            KeySpec::MediaNextTrack => write!(f, "Next Track"),
+            KeySpec::MediaPrevTrack => write!(f, "Previous Track"),
+            KeySpec::BrightnessUp => write!(f, "Brightness Up"),
+            KeySpec::BrightnessDown => write!(f, "Brightness Down"),
         }
     }
 }
@@ -62,6 +84,15 @@ impl KeySpec {
             "alt" => Some(KeySpec::Alt),
             "shift" => Some(KeySpec::Shift),
             "meta" | "super" | "win" | "cmd" => Some(KeySpec::Meta),
+            "volumeup" | "volume_up" => Some(KeySpec::VolumeUp),
+            "volumedown" | "volume_down" => Some(KeySpec::VolumeDown),
+            "volumemute" | "volume_mute" | "mute" => Some(KeySpec::VolumeMute),
+            "playpause" | "play_pause" | "media_play_pause" => Some(KeySpec::MediaPlayPause),
+            "mediastop" | "media_stop" => Some(KeySpec::MediaStop),
+            "nexttrack" | "next_track" | "media_next" => Some(KeySpec::MediaNextTrack),
+            "prevtrack" | "prev_track" | "media_prev" | "media_previous" => Some(KeySpec::MediaPrevTrack),
+            "brightnessup" | "brightness_up" => Some(KeySpec::BrightnessUp),
+            "brightnessdown" | "brightness_down" => Some(KeySpec::BrightnessDown),
             s if s.starts_with('f') && s.len() <= 3 => {
                 s[1..].parse::<u8>().ok().map(KeySpec::F)
             }
@@ -188,6 +219,20 @@ impl Default for MappingOptions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KnobMode {
+    /// Infer direction from value delta (requires state tracking).
+    #[default]
+    Absolute,
+    /// CW = 1–63, CCW = 65–127 (two's complement style).
+    Relative1,
+    /// CW = 65–127, CCW = 1–63 (binary offset style).
+    Relative2,
+    /// CW = 1–64, CCW = 127–65 (sign+magnitude style).
+    Relative3,
+}
+
 /// Top-level config file structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -200,13 +245,13 @@ pub struct AppConfig {
 }
 
 fn default_version() -> u32 {
-    1
+    2
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             selected_device: None,
             mappings: Vec::new(),
         }
@@ -325,6 +370,86 @@ mod tests {
             keys: vec![KeySpec::Ctrl, KeySpec::Shift, KeySpec::Char('p')],
         };
         assert_eq!(format!("{chord}"), "Chord: Ctrl+Shift+p");
+    }
+
+    #[test]
+    fn test_keyspec_from_name_media_keys() {
+        assert_eq!(KeySpec::from_name("volumeup"), Some(KeySpec::VolumeUp));
+        assert_eq!(KeySpec::from_name("volume_up"), Some(KeySpec::VolumeUp));
+        assert_eq!(KeySpec::from_name("volumedown"), Some(KeySpec::VolumeDown));
+        assert_eq!(KeySpec::from_name("volume_down"), Some(KeySpec::VolumeDown));
+        assert_eq!(KeySpec::from_name("volumemute"), Some(KeySpec::VolumeMute));
+        assert_eq!(KeySpec::from_name("volume_mute"), Some(KeySpec::VolumeMute));
+        assert_eq!(KeySpec::from_name("mute"), Some(KeySpec::VolumeMute));
+        assert_eq!(KeySpec::from_name("playpause"), Some(KeySpec::MediaPlayPause));
+        assert_eq!(KeySpec::from_name("play_pause"), Some(KeySpec::MediaPlayPause));
+        assert_eq!(KeySpec::from_name("media_play_pause"), Some(KeySpec::MediaPlayPause));
+        assert_eq!(KeySpec::from_name("mediastop"), Some(KeySpec::MediaStop));
+        assert_eq!(KeySpec::from_name("media_stop"), Some(KeySpec::MediaStop));
+        assert_eq!(KeySpec::from_name("nexttrack"), Some(KeySpec::MediaNextTrack));
+        assert_eq!(KeySpec::from_name("next_track"), Some(KeySpec::MediaNextTrack));
+        assert_eq!(KeySpec::from_name("media_next"), Some(KeySpec::MediaNextTrack));
+        assert_eq!(KeySpec::from_name("prevtrack"), Some(KeySpec::MediaPrevTrack));
+        assert_eq!(KeySpec::from_name("prev_track"), Some(KeySpec::MediaPrevTrack));
+        assert_eq!(KeySpec::from_name("media_prev"), Some(KeySpec::MediaPrevTrack));
+        assert_eq!(KeySpec::from_name("media_previous"), Some(KeySpec::MediaPrevTrack));
+        assert_eq!(KeySpec::from_name("brightnessup"), Some(KeySpec::BrightnessUp));
+        assert_eq!(KeySpec::from_name("brightness_up"), Some(KeySpec::BrightnessUp));
+        assert_eq!(KeySpec::from_name("brightnessdown"), Some(KeySpec::BrightnessDown));
+        assert_eq!(KeySpec::from_name("brightness_down"), Some(KeySpec::BrightnessDown));
+    }
+
+    #[test]
+    fn test_keyspec_display_media_keys() {
+        assert_eq!(format!("{}", KeySpec::VolumeUp), "Volume Up");
+        assert_eq!(format!("{}", KeySpec::VolumeDown), "Volume Down");
+        assert_eq!(format!("{}", KeySpec::VolumeMute), "Volume Mute");
+        assert_eq!(format!("{}", KeySpec::MediaPlayPause), "Play/Pause");
+        assert_eq!(format!("{}", KeySpec::MediaStop), "Media Stop");
+        assert_eq!(format!("{}", KeySpec::MediaNextTrack), "Next Track");
+        assert_eq!(format!("{}", KeySpec::MediaPrevTrack), "Previous Track");
+        assert_eq!(format!("{}", KeySpec::BrightnessUp), "Brightness Up");
+        assert_eq!(format!("{}", KeySpec::BrightnessDown), "Brightness Down");
+    }
+
+    #[test]
+    fn test_knob_mode_serde_roundtrip() {
+        use toml;
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Wrapper { mode: KnobMode }
+
+        for mode in [KnobMode::Absolute, KnobMode::Relative1, KnobMode::Relative2, KnobMode::Relative3] {
+            let w = Wrapper { mode: mode.clone() };
+            let s = toml::to_string(&w).unwrap();
+            let w2: Wrapper = toml::from_str(&s).unwrap();
+            assert_eq!(w, w2);
+        }
+    }
+
+    #[test]
+    fn test_knob_rotation_trigger_serde_roundtrip() {
+        use crate::midi::trigger::{KnobRotationDirection, MidiTrigger};
+        use toml;
+
+        let trigger = MidiTrigger::KnobRotation {
+            channel: 1,
+            controller: 7,
+            direction: KnobRotationDirection::Clockwise,
+            mode: KnobMode::Absolute,
+        };
+        let s = toml::to_string(&trigger).unwrap();
+        let t2: MidiTrigger = toml::from_str(&s).unwrap();
+        assert_eq!(trigger, t2);
+
+        let trigger_ccw = MidiTrigger::KnobRotation {
+            channel: 1,
+            controller: 10,
+            direction: KnobRotationDirection::CounterClockwise,
+            mode: KnobMode::Relative1,
+        };
+        let s2 = toml::to_string(&trigger_ccw).unwrap();
+        let t3: MidiTrigger = toml::from_str(&s2).unwrap();
+        assert_eq!(trigger_ccw, t3);
     }
 
     #[test]

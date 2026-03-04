@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::config::model::{KeySpec, MacroStep, Mapping};
+use crate::config::model::{KeySpec, KnobMode, MacroStep, Mapping};
+use crate::midi::decode::KnobState;
 use crate::midi::manager::MidiDeviceInfo;
 use crate::midi::trigger::MidiTrigger;
 
@@ -27,6 +28,12 @@ pub enum LearnState {
     WaitingForChord { pressed: Vec<KeySpec> },
     WaitingForText { buffer: String },
     RecordingMacro { started_at: Instant, steps: Vec<MacroStep> },
+    /// Knob detected — confirm whether to configure as knob
+    KnobDetected { channel: u8, controller: u8, values: Vec<u8> },
+    /// Waiting for CW turn
+    KnobLearnCW { channel: u8, controller: u8, mode: KnobMode },
+    /// Waiting for CCW turn
+    KnobLearnCCW { channel: u8, controller: u8, mode: KnobMode },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +65,7 @@ pub struct AppState {
     pub status_message: Option<String>,
     pub debounce_timers: HashMap<String, Instant>,
     pub last_cc_values: HashMap<(u8, u8), u8>,
+    pub knob_state: KnobState,
     pub panic_stop: bool,
     pub device_list_index: usize,
     pub text_input_buffer: String,
@@ -99,6 +107,7 @@ impl Default for AppState {
             status_message: None,
             debounce_timers: HashMap::new(),
             last_cc_values: HashMap::new(),
+            knob_state: KnobState::new(),
             panic_stop: false,
             device_list_index: 0,
             text_input_buffer: String::new(),

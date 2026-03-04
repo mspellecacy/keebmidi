@@ -6,6 +6,7 @@ use ratatui::Frame;
 
 use crate::app::state::{ActivePane, AppState};
 use crate::config::model::OutputAction;
+use crate::midi::trigger::MidiTrigger;
 
 pub fn draw_details(f: &mut Frame, area: Rect, state: &AppState) {
     let is_focused = state.active_pane == ActivePane::Details;
@@ -48,6 +49,21 @@ pub fn draw_details(f: &mut Frame, area: Rect, state: &AppState) {
                 Span::raw(format!("{}", mapping.action)),
             ]),
         ];
+
+        // Show knob-specific fields
+        if let MidiTrigger::KnobRotation {
+            direction, mode, ..
+        } = &mapping.trigger
+        {
+            lines.push(Line::from(vec![
+                Span::styled("Direction: ", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("{direction}")),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Encoding Mode: ", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("{mode:?}")),
+            ]));
+        }
 
         // Show macro steps if applicable
         if let OutputAction::Macro { ref spec } = mapping.action {

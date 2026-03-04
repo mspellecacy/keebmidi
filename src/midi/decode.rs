@@ -1,4 +1,13 @@
-use crate::midi::trigger::MidiTrigger;
+use std::collections::HashMap;
+
+use crate::config::model::KnobMode;
+use crate::midi::trigger::{KnobRotationDirection, MidiTrigger};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnobDirection {
+    Clockwise,
+    CounterClockwise,
+}
 
 /// A raw MIDI event decoded from bytes, before normalization into a trigger.
 #[derive(Debug, Clone, PartialEq)]
@@ -7,6 +16,79 @@ pub struct MidiEvent {
     pub raw_velocity: Option<u8>,
     pub raw_value: Option<u8>,
     pub timestamp_us: u64,
+    /// Populated for CC events when knob rotation mappings exist.
+    pub knob_direction: Option<KnobDirection>,
+}
+
+/// State tracker for absolute-mode knobs.
+/// Stores the last seen CC value per (channel, controller) pair.
+pub struct KnobState {
+    last_values: HashMap<(u8, u8), u8>,
+}
+
+impl KnobState {
+    pub fn new() -> Self {
+        Self {
+            last_values: HashMap::new(),
+        }
+    }
+
+    /// Determine rotation direction for an absolute-mode CC message.
+    /// Returns None if this is the first message (no previous value to compare).
+    pub fn detect_direction_absolute(
+        &mut self,
+        channel: u8,
+        controller: u8,
+        value: u8,
+    ) -> Option<KnobDirection> {
+        let key = (channel, controller);
+        let direction = if let Some(&prev) = self.last_values.get(&key) {
+            if value > prev {
+                Some(KnobDirection::Clockwise)
+            } else if value < prev {
+                Some(KnobDirection::CounterClockwise)
+            } else {
+                None // no change
+            }
+        } else {
+            None // first event, no direction yet
+        };
+        self.last_values.insert(key, value);
+        direction
+    }
+
+    /// Clear all tracked state (e.g., on device disconnect).
+    pub fn reset(&mut self) {
+        self.last_values.clear();
+    }
+
+    /// Remove entries for controllers that haven't been active.
+    /// Called periodically to prevent unbounded growth.
+    pub fn retain_active(&mut self, active_keys: &[(u8, u8)]) {
+        self.last_values.retain(|k, _| active_keys.contains(k));
+    }
+}
+
+/// Determine rotation direction for a relative-mode CC message.
+pub fn detect_direction_relative(value: u8, mode: &KnobMode) -> Option<KnobDirection> {
+    match mode {
+        KnobMode::Relative1 => match value {
+            1..=63 => Some(KnobDirection::Clockwise),
+            65..=127 => Some(KnobDirection::CounterClockwise),
+            _ => None,
+        },
+        KnobMode::Relative2 => match value {
+            65..=127 => Some(KnobDirection::Clockwise),
+            1..=63 => Some(KnobDirection::CounterClockwise),
+            _ => None,
+        },
+        KnobMode::Relative3 => match value {
+            1..=64 => Some(KnobDirection::Clockwise),
+            65..=127 => Some(KnobDirection::CounterClockwise),
+            _ => None,
+        },
+        KnobMode::Absolute => None, // caller should use KnobState instead
+    }
 }
 
 /// Decode raw MIDI bytes into a MidiEvent.
@@ -37,6 +119,7 @@ pub fn decode_midi_message(data: &[u8], timestamp_us: u64) -> Option<MidiEvent> 
             raw_velocity: Some(data[2]),
             raw_value: None,
             timestamp_us,
+            knob_direction: None,
         }),
         // Note On
         0x90 if data.len() >= 3 => {
@@ -51,6 +134,7 @@ pub fn decode_midi_message(data: &[u8], timestamp_us: u64) -> Option<MidiEvent> 
                     raw_velocity: Some(0),
                     raw_value: None,
                     timestamp_us,
+                    knob_direction: None,
                 })
             } else {
                 Some(MidiEvent {
@@ -63,6 +147,7 @@ pub fn decode_midi_message(data: &[u8], timestamp_us: u64) -> Option<MidiEvent> 
                     raw_velocity: Some(velocity),
                     raw_value: None,
                     timestamp_us,
+                    knob_direction: None,
                 })
             }
         }
@@ -77,6 +162,7 @@ pub fn decode_midi_message(data: &[u8], timestamp_us: u64) -> Option<MidiEvent> 
             raw_velocity: None,
             raw_value: Some(data[2]),
             timestamp_us,
+            knob_direction: None,
         }),
         // Program Change
         0xC0 if data.len() >= 2 => Some(MidiEvent {
@@ -87,6 +173,7 @@ pub fn decode_midi_message(data: &[u8], timestamp_us: u64) -> Option<MidiEvent> 
             raw_velocity: None,
             raw_value: None,
             timestamp_us,
+            knob_direction: None,
         }),
         // Pitch Bend
         0xE0 if data.len() >= 3 => {
@@ -100,6 +187,7 @@ pub fn decode_midi_message(data: &[u8], timestamp_us: u64) -> Option<MidiEvent> 
                 raw_velocity: None,
                 raw_value: None,
                 timestamp_us,
+                knob_direction: None,
             })
         }
         _ => None,
@@ -203,6 +291,30 @@ pub fn event_matches_trigger(event: &MidiEvent, trigger: &MidiTrigger) -> bool {
             // PitchBend value matching would need the raw pitch value stored
             // For now, match on channel only if no range specified
             min_value.is_none() && max_value.is_none()
+        }
+        // KnobRotation trigger matches against raw CC events with knob_direction set
+        (
+            MidiTrigger::ControlChange {
+                channel: ec,
+                controller: ecc,
+                ..
+            },
+            MidiTrigger::KnobRotation {
+                channel: tc,
+                controller: tcc,
+                direction: td,
+                ..
+            },
+        ) => {
+            ec == tc
+                && ecc == tcc
+                && event.knob_direction.as_ref()
+                    == Some(&match td {
+                        KnobRotationDirection::Clockwise => KnobDirection::Clockwise,
+                        KnobRotationDirection::CounterClockwise => {
+                            KnobDirection::CounterClockwise
+                        }
+                    })
         }
         _ => false,
     }
@@ -317,6 +429,7 @@ mod tests {
             raw_velocity: Some(100),
             raw_value: None,
             timestamp_us: 0,
+            knob_direction: None,
         };
         let trigger = MidiTrigger::NoteOn {
             channel: 1,
@@ -339,6 +452,7 @@ mod tests {
             raw_velocity: Some(50),
             raw_value: None,
             timestamp_us: 0,
+            knob_direction: None,
         };
         let trigger_in_range = MidiTrigger::NoteOn {
             channel: 1,
@@ -369,11 +483,235 @@ mod tests {
             raw_velocity: None,
             raw_value: Some(127),
             timestamp_us: 0,
+            knob_direction: None,
         };
         let trigger = MidiTrigger::ControlChange {
             channel: 1,
             controller: 64,
             min_value: Some(1),
+            max_value: Some(127),
+        };
+        assert!(event_matches_trigger(&event, &trigger));
+    }
+
+    // === Knob direction detection tests ===
+
+    #[test]
+    fn test_detect_direction_absolute_cw() {
+        let mut ks = KnobState::new();
+        ks.detect_direction_absolute(1, 7, 64); // seed
+        assert_eq!(
+            ks.detect_direction_absolute(1, 7, 66),
+            Some(KnobDirection::Clockwise)
+        );
+    }
+
+    #[test]
+    fn test_detect_direction_absolute_ccw() {
+        let mut ks = KnobState::new();
+        ks.detect_direction_absolute(1, 7, 64);
+        assert_eq!(
+            ks.detect_direction_absolute(1, 7, 62),
+            Some(KnobDirection::CounterClockwise)
+        );
+    }
+
+    #[test]
+    fn test_detect_direction_absolute_no_change() {
+        let mut ks = KnobState::new();
+        ks.detect_direction_absolute(1, 7, 64);
+        assert_eq!(ks.detect_direction_absolute(1, 7, 64), None);
+    }
+
+    #[test]
+    fn test_detect_direction_absolute_first_event() {
+        let mut ks = KnobState::new();
+        assert_eq!(ks.detect_direction_absolute(1, 7, 64), None);
+    }
+
+    #[test]
+    fn test_detect_direction_relative1_cw() {
+        assert_eq!(
+            detect_direction_relative(1, &KnobMode::Relative1),
+            Some(KnobDirection::Clockwise)
+        );
+        assert_eq!(
+            detect_direction_relative(63, &KnobMode::Relative1),
+            Some(KnobDirection::Clockwise)
+        );
+    }
+
+    #[test]
+    fn test_detect_direction_relative1_ccw() {
+        assert_eq!(
+            detect_direction_relative(65, &KnobMode::Relative1),
+            Some(KnobDirection::CounterClockwise)
+        );
+        assert_eq!(
+            detect_direction_relative(127, &KnobMode::Relative1),
+            Some(KnobDirection::CounterClockwise)
+        );
+    }
+
+    #[test]
+    fn test_detect_direction_relative2_cw() {
+        assert_eq!(
+            detect_direction_relative(65, &KnobMode::Relative2),
+            Some(KnobDirection::Clockwise)
+        );
+        assert_eq!(
+            detect_direction_relative(127, &KnobMode::Relative2),
+            Some(KnobDirection::Clockwise)
+        );
+    }
+
+    #[test]
+    fn test_detect_direction_relative2_ccw() {
+        assert_eq!(
+            detect_direction_relative(1, &KnobMode::Relative2),
+            Some(KnobDirection::CounterClockwise)
+        );
+        assert_eq!(
+            detect_direction_relative(63, &KnobMode::Relative2),
+            Some(KnobDirection::CounterClockwise)
+        );
+    }
+
+    #[test]
+    fn test_detect_direction_relative3_cw() {
+        assert_eq!(
+            detect_direction_relative(1, &KnobMode::Relative3),
+            Some(KnobDirection::Clockwise)
+        );
+        assert_eq!(
+            detect_direction_relative(64, &KnobMode::Relative3),
+            Some(KnobDirection::Clockwise)
+        );
+    }
+
+    #[test]
+    fn test_detect_direction_relative3_ccw() {
+        assert_eq!(
+            detect_direction_relative(65, &KnobMode::Relative3),
+            Some(KnobDirection::CounterClockwise)
+        );
+        assert_eq!(
+            detect_direction_relative(127, &KnobMode::Relative3),
+            Some(KnobDirection::CounterClockwise)
+        );
+    }
+
+    #[test]
+    fn test_detect_direction_relative_zero() {
+        assert_eq!(detect_direction_relative(0, &KnobMode::Relative1), None);
+        assert_eq!(detect_direction_relative(0, &KnobMode::Relative2), None);
+        assert_eq!(detect_direction_relative(0, &KnobMode::Relative3), None);
+    }
+
+    #[test]
+    fn test_knob_state_tracks_multiple_controllers() {
+        let mut ks = KnobState::new();
+        ks.detect_direction_absolute(1, 7, 64);
+        ks.detect_direction_absolute(1, 10, 100);
+        assert_eq!(
+            ks.detect_direction_absolute(1, 7, 66),
+            Some(KnobDirection::Clockwise)
+        );
+        assert_eq!(
+            ks.detect_direction_absolute(1, 10, 98),
+            Some(KnobDirection::CounterClockwise)
+        );
+    }
+
+    // === Knob rotation trigger matching tests ===
+
+    #[test]
+    fn test_trigger_matching_knob_rotation_cw() {
+        let event = MidiEvent {
+            trigger: MidiTrigger::ControlChange {
+                channel: 1,
+                controller: 7,
+                min_value: None,
+                max_value: None,
+            },
+            raw_velocity: None,
+            raw_value: Some(66),
+            timestamp_us: 0,
+            knob_direction: Some(KnobDirection::Clockwise),
+        };
+        let trigger = MidiTrigger::KnobRotation {
+            channel: 1,
+            controller: 7,
+            direction: KnobRotationDirection::Clockwise,
+            mode: KnobMode::Absolute,
+        };
+        assert!(event_matches_trigger(&event, &trigger));
+    }
+
+    #[test]
+    fn test_trigger_matching_knob_rotation_ccw() {
+        let event = MidiEvent {
+            trigger: MidiTrigger::ControlChange {
+                channel: 1,
+                controller: 7,
+                min_value: None,
+                max_value: None,
+            },
+            raw_velocity: None,
+            raw_value: Some(62),
+            timestamp_us: 0,
+            knob_direction: Some(KnobDirection::CounterClockwise),
+        };
+        let trigger = MidiTrigger::KnobRotation {
+            channel: 1,
+            controller: 7,
+            direction: KnobRotationDirection::CounterClockwise,
+            mode: KnobMode::Absolute,
+        };
+        assert!(event_matches_trigger(&event, &trigger));
+    }
+
+    #[test]
+    fn test_trigger_matching_knob_rotation_wrong_direction() {
+        let event = MidiEvent {
+            trigger: MidiTrigger::ControlChange {
+                channel: 1,
+                controller: 7,
+                min_value: None,
+                max_value: None,
+            },
+            raw_velocity: None,
+            raw_value: Some(66),
+            timestamp_us: 0,
+            knob_direction: Some(KnobDirection::Clockwise),
+        };
+        let trigger = MidiTrigger::KnobRotation {
+            channel: 1,
+            controller: 7,
+            direction: KnobRotationDirection::CounterClockwise,
+            mode: KnobMode::Absolute,
+        };
+        assert!(!event_matches_trigger(&event, &trigger));
+    }
+
+    #[test]
+    fn test_trigger_matching_cc_still_works() {
+        let event = MidiEvent {
+            trigger: MidiTrigger::ControlChange {
+                channel: 1,
+                controller: 7,
+                min_value: None,
+                max_value: None,
+            },
+            raw_velocity: None,
+            raw_value: Some(100),
+            timestamp_us: 0,
+            knob_direction: Some(KnobDirection::Clockwise),
+        };
+        let trigger = MidiTrigger::ControlChange {
+            channel: 1,
+            controller: 7,
+            min_value: Some(50),
             max_value: Some(127),
         };
         assert!(event_matches_trigger(&event, &trigger));
@@ -391,6 +729,7 @@ mod tests {
             raw_velocity: Some(100),
             raw_value: None,
             timestamp_us: 0,
+            knob_direction: None,
         };
         let trigger = MidiTrigger::ControlChange {
             channel: 1,

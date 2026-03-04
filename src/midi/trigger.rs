@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::config::model::KnobMode;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MidiTrigger {
@@ -36,6 +38,21 @@ pub enum MidiTrigger {
         #[serde(skip_serializing_if = "Option::is_none")]
         max_value: Option<i16>,
     },
+    /// Fires when a CC knob is rotated in a specific direction.
+    KnobRotation {
+        channel: u8,
+        controller: u8,
+        direction: KnobRotationDirection,
+        #[serde(default)]
+        mode: KnobMode,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnobRotationDirection {
+    Clockwise,
+    CounterClockwise,
 }
 
 impl fmt::Display for MidiTrigger {
@@ -86,6 +103,27 @@ impl fmt::Display for MidiTrigger {
                     _ => write!(f, " val=*"),
                 }
             }
+            MidiTrigger::KnobRotation {
+                channel,
+                controller,
+                direction,
+                ..
+            } => {
+                let dir = match direction {
+                    KnobRotationDirection::Clockwise => "CW",
+                    KnobRotationDirection::CounterClockwise => "CCW",
+                };
+                write!(f, "Knob {dir} ch={channel} ctrl={controller}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for KnobRotationDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KnobRotationDirection::Clockwise => write!(f, "Clockwise"),
+            KnobRotationDirection::CounterClockwise => write!(f, "Counter-Clockwise"),
         }
     }
 }

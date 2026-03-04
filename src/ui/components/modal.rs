@@ -70,6 +70,44 @@ fn draw_learn_midi_modal(f: &mut Frame, state: &AppState) {
         )));
     }
 
+    // Knob detection states
+    match &state.learn_state {
+        Some(LearnState::KnobDetected { channel, controller, .. }) => {
+            lines.clear();
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("  Knob detected on CC {controller} (ch={channel})."),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from("  Configure as rotary knob?"));
+            lines.push(Line::from(""));
+            lines.push(Line::from("  [Y] Yes  [N] No  [Esc] Cancel"));
+        }
+        Some(LearnState::KnobLearnCW { .. }) => {
+            lines.clear();
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Turn the knob CLOCKWISE",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from("  and press Enter…"));
+            lines.push(Line::from(""));
+            lines.push(Line::from("  [Enter] Confirm  [Esc] Cancel"));
+        }
+        Some(LearnState::KnobLearnCCW { .. }) => {
+            lines.clear();
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Turn the knob COUNTER-CLOCKWISE",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from("  and press Enter…"));
+            lines.push(Line::from(""));
+            lines.push(Line::from("  [Enter] Confirm  [Esc] Cancel"));
+        }
+        _ => {}
+    }
+
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()

@@ -105,7 +105,7 @@ mod tests {
     fn test_load_nonexistent_returns_default() {
         let path = std::path::PathBuf::from("/tmp/keebmidi_nonexistent_test.toml");
         let config = load_config(&path).unwrap();
-        assert_eq!(config.version, 1);
+        assert_eq!(config.version, 2);
         assert!(config.mappings.is_empty());
     }
 }

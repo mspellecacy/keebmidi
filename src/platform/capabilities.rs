@@ -27,3 +27,33 @@ pub fn check_platform_warnings() -> Vec<String> {
 
     warnings
 }
+
+/// Check platform capabilities for media key support and return warnings.
+pub fn check_media_key_support() -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            warnings.push(
+                "Wayland detected: media key injection may be limited. \
+                 Consider running under X11/XWayland for full support."
+                    .to_string(),
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        warnings.push(
+            "macOS: ensure Accessibility permissions are granted for media key injection."
+                .to_string(),
+        );
+    }
+
+    for w in &warnings {
+        warn!("{w}");
+    }
+
+    warnings
+}

@@ -4,8 +4,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::actions::executor::ActionCommand;
 use crate::app::state::*;
 use crate::config::model::*;
-use crate::midi::decode::{event_matches_trigger, MidiEvent};
-use crate::midi::trigger::MidiTrigger;
+use crate::midi::decode::{detect_direction_relative, event_matches_trigger, MidiEvent};
+use crate::midi::trigger::{KnobRotationDirection, MidiTrigger};
 
 /// Side effects that the reducer requests the app loop to perform.
 pub enum SideEffect {
@@ -178,13 +178,124 @@ fn handle_run_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffect> {
 }
 
 fn handle_learn_midi_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffect> {
-    if key.code == KeyCode::Esc {
-        state.mode = state.previous_mode.take().unwrap_or(AppMode::Setup);
-        state.learn_state = None;
-        state.learned_trigger = None;
-        state.add_log("Learn MIDI cancelled");
+    match key.code {
+        KeyCode::Esc => {
+            state.mode = state.previous_mode.take().unwrap_or(AppMode::Setup);
+            state.learn_state = None;
+            state.learned_trigger = None;
+            state.add_log("Learn MIDI cancelled");
+        }
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            if let Some(LearnState::KnobDetected {
+                channel,
+                controller,
+                values,
+            }) = &state.learn_state
+            {
+                let mode = detect_knob_mode(values);
+                let ch = *channel;
+                let ctrl = *controller;
+                state.add_log(format!("Detected mode: {mode:?}. Turn the knob CLOCKWISE and press Enter…"));
+                state.learn_state = Some(LearnState::KnobLearnCW {
+                    channel: ch,
+                    controller: ctrl,
+                    mode,
+                });
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            if let Some(LearnState::KnobDetected {
+                channel,
+                controller,
+                ..
+            }) = &state.learn_state
+            {
+                let trigger = MidiTrigger::ControlChange {
+                    channel: *channel,
+                    controller: *controller,
+                    min_value: None,
+                    max_value: None,
+                };
+                state.learned_trigger = Some(trigger.clone());
+                state.add_log(format!("Learned trigger: {trigger}"));
+                state.mode = AppMode::LearnAction;
+                state.action_menu_open = true;
+                state.action_menu_index = 0;
+                state.learn_state = None;
+                state.add_log("Choose action type for this mapping");
+            }
+        }
+        KeyCode::Enter => {
+            match &state.learn_state {
+                Some(LearnState::KnobLearnCW {
+                    channel,
+                    controller,
+                    mode,
+                }) => {
+                    let ch = *channel;
+                    let ctrl = *controller;
+                    let m = mode.clone();
+                    let cw_trigger = MidiTrigger::KnobRotation {
+                        channel: ch,
+                        controller: ctrl,
+                        direction: KnobRotationDirection::Clockwise,
+                        mode: m.clone(),
+                    };
+                    state.learned_trigger = Some(cw_trigger);
+                    state.mode = AppMode::LearnAction;
+                    state.action_menu_open = true;
+                    state.action_menu_index = 0;
+                    state.learn_state = None;
+                    state.add_log("Choose action for CW rotation");
+                }
+                Some(LearnState::KnobLearnCCW {
+                    channel,
+                    controller,
+                    mode,
+                }) => {
+                    let ch = *channel;
+                    let ctrl = *controller;
+                    let m = mode.clone();
+                    let ccw_trigger = MidiTrigger::KnobRotation {
+                        channel: ch,
+                        controller: ctrl,
+                        direction: KnobRotationDirection::CounterClockwise,
+                        mode: m,
+                    };
+                    state.learned_trigger = Some(ccw_trigger);
+                    state.mode = AppMode::LearnAction;
+                    state.action_menu_open = true;
+                    state.action_menu_index = 0;
+                    state.learn_state = None;
+                    state.add_log("Choose action for CCW rotation");
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
     vec![SideEffect::None]
+}
+
+/// Heuristic to detect knob encoding mode from observed values.
+fn detect_knob_mode(values: &[u8]) -> KnobMode {
+    if values.is_empty() {
+        return KnobMode::Absolute;
+    }
+    let has_low = values.iter().any(|&v| v >= 1 && v <= 63);
+    let has_high = values.iter().any(|&v| v >= 65 && v <= 127);
+    let has_smooth_progression = values.windows(2).all(|w| {
+        let diff = (w[1] as i16 - w[0] as i16).unsigned_abs();
+        diff <= 5
+    });
+
+    if has_smooth_progression && values.len() >= 2 {
+        KnobMode::Absolute
+    } else if has_low && has_high {
+        KnobMode::Relative1
+    } else {
+        KnobMode::Absolute
+    }
 }
 
 fn handle_learn_action_key(state: &mut AppState, key: KeyEvent) -> Vec<SideEffect> {
@@ -613,22 +724,135 @@ pub fn handle_midi_event(state: &mut AppState, event: MidiEvent) -> Vec<SideEffe
 
     // In learn mode, capture the trigger
     if state.mode == AppMode::LearnMidi {
-        if let Some(LearnState::WaitingForMidi) = &state.learn_state {
-            state.learned_trigger = Some(event.trigger.clone());
-            state.add_log(format!("Learned trigger: {summary}"));
+        match &state.learn_state {
+            Some(LearnState::WaitingForMidi) => {
+                // Check if this is a CC event that could be a knob
+                if let MidiTrigger::ControlChange {
+                    channel, controller, ..
+                } = &event.trigger
+                {
+                    if let Some(val) = event.raw_value {
+                        // Start knob detection: collect values
+                        state.learn_state = Some(LearnState::KnobDetected {
+                            channel: *channel,
+                            controller: *controller,
+                            values: vec![val],
+                        });
+                        state.add_log(format!(
+                            "CC detected on ch={channel} ctrl={controller}. \
+                             Knob detected. Configure as rotary knob? [Y/N]"
+                        ));
+                        return vec![SideEffect::None];
+                    }
+                }
 
-            // Move to learn action
-            state.mode = AppMode::LearnAction;
-            state.action_menu_open = true;
-            state.action_menu_index = 0;
-            state.learn_state = None;
-            state.add_log("Choose action type for this mapping");
-            return vec![SideEffect::None];
+                // Non-CC trigger: proceed as before
+                state.learned_trigger = Some(event.trigger.clone());
+                state.add_log(format!("Learned trigger: {summary}"));
+                state.mode = AppMode::LearnAction;
+                state.action_menu_open = true;
+                state.action_menu_index = 0;
+                state.learn_state = None;
+                state.add_log("Choose action type for this mapping");
+                return vec![SideEffect::None];
+            }
+            Some(LearnState::KnobDetected {
+                channel,
+                controller,
+                values,
+            }) => {
+                // Accumulate more CC values for mode detection
+                if let MidiTrigger::ControlChange {
+                    channel: ec,
+                    controller: ecc,
+                    ..
+                } = &event.trigger
+                {
+                    if ec == channel && ecc == controller {
+                        if let Some(val) = event.raw_value {
+                            let mut new_values = values.clone();
+                            new_values.push(val);
+                            state.learn_state = Some(LearnState::KnobDetected {
+                                channel: *channel,
+                                controller: *controller,
+                                values: new_values,
+                            });
+                        }
+                    }
+                }
+                return vec![SideEffect::None];
+            }
+            Some(LearnState::KnobLearnCW { channel, controller, .. }) => {
+                // Ignore CC events during CW/CCW learn (waiting for key confirmation)
+                if let MidiTrigger::ControlChange {
+                    channel: ec,
+                    controller: ecc,
+                    ..
+                } = &event.trigger
+                {
+                    if ec == channel && ecc == controller {
+                        return vec![SideEffect::None];
+                    }
+                }
+                return vec![SideEffect::None];
+            }
+            Some(LearnState::KnobLearnCCW { channel, controller, .. }) => {
+                if let MidiTrigger::ControlChange {
+                    channel: ec,
+                    controller: ecc,
+                    ..
+                } = &event.trigger
+                {
+                    if ec == channel && ecc == controller {
+                        return vec![SideEffect::None];
+                    }
+                }
+                return vec![SideEffect::None];
+            }
+            _ => {}
         }
     }
 
     // In run mode, match and execute
     if state.mode == AppMode::Run && !state.panic_stop {
+        // Compute knob direction for CC events before matching
+        let mut event = event;
+        if let MidiTrigger::ControlChange {
+            channel, controller, ..
+        } = &event.trigger
+        {
+            if let Some(raw_val) = event.raw_value {
+                let ch = *channel;
+                let ctrl = *controller;
+                // Check if any knob rotation mapping exists for this (channel, controller)
+                let knob_mode = state.mappings.iter().find_map(|m| {
+                    if let MidiTrigger::KnobRotation {
+                        channel: mc,
+                        controller: mctrl,
+                        mode,
+                        ..
+                    } = &m.trigger
+                    {
+                        if *mc == ch && *mctrl == ctrl {
+                            Some(mode.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+                if let Some(mode) = knob_mode {
+                    let direction = match mode {
+                        KnobMode::Absolute => {
+                            state.knob_state.detect_direction_absolute(ch, ctrl, raw_val)
+                        }
+                        _ => detect_direction_relative(raw_val, &mode),
+                    };
+                    event.knob_direction = direction;
+                }
+            }
+        }
         return match_and_execute(state, &event);
     }
 
@@ -665,13 +889,18 @@ fn match_and_execute(state: &mut AppState, event: &MidiEvent) -> Vec<SideEffect>
             }
         }
 
-        // Value change only check for CC
+        // Value change only check for CC and KnobRotation
         if mapping.options.trigger_on_value_change_only {
-            if let MidiTrigger::ControlChange {
-                channel, controller, ..
-            } = &mapping.trigger
-            {
-                let key = (*channel, *controller);
+            let cc_key = match &mapping.trigger {
+                MidiTrigger::ControlChange {
+                    channel, controller, ..
+                } => Some((*channel, *controller)),
+                MidiTrigger::KnobRotation {
+                    channel, controller, ..
+                } => Some((*channel, *controller)),
+                _ => None,
+            };
+            if let Some(key) = cc_key {
                 if let Some(raw) = event.raw_value {
                     if let Some(last_val) = state.last_cc_values.get(&key) {
                         if *last_val == raw {
@@ -833,6 +1062,7 @@ mod tests {
             raw_velocity: Some(100),
             raw_value: None,
             timestamp_us: 0,
+            knob_direction: None,
         };
 
         handle_midi_event(&mut state, event);
@@ -899,6 +1129,7 @@ mod tests {
             raw_velocity: Some(100),
             raw_value: None,
             timestamp_us: 0,
+            knob_direction: None,
         };
 
         let effects = handle_midi_event(&mut state, event);
@@ -940,6 +1171,7 @@ mod tests {
             raw_velocity: Some(100),
             raw_value: None,
             timestamp_us: 0,
+            knob_direction: None,
         };
 
         // First trigger should work

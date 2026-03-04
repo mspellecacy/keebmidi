@@ -15,6 +15,15 @@ pub const MANUAL_KEY_LIST: &[(&str, KeySpec)] = &[
     ("Alt", KeySpec::Alt),
     ("Shift", KeySpec::Shift),
     ("Meta", KeySpec::Meta),
+    ("Volume Up", KeySpec::VolumeUp),
+    ("Volume Down", KeySpec::VolumeDown),
+    ("Volume Mute", KeySpec::VolumeMute),
+    ("Play / Pause", KeySpec::MediaPlayPause),
+    ("Media Stop", KeySpec::MediaStop),
+    ("Next Track", KeySpec::MediaNextTrack),
+    ("Previous Track", KeySpec::MediaPrevTrack),
+    ("Brightness Up", KeySpec::BrightnessUp),
+    ("Brightness Down", KeySpec::BrightnessDown),
 ];
 
 /// Build the full manual key list including F-keys and common characters.
